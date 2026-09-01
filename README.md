@@ -2,7 +2,15 @@
 
 `extract_job_csv.py` collects execution details from the Ansible Automation Platform (AAP) Controller or AWX REST API and writes them as CSV.
 
-Use it when you need a simple report of job runs: identifiers, timestamps, the container image that executed the job, elapsed time, and the first and last lines of job stdout.
+Use it when you need a simple report of job runs: identifiers, timestamps, the container image that executed the job, elapsed time, the first and last lines of job stdout, the first timestamp in stdout, and the `Playbook run` timer line.
+
+**Required Controller setting:** before jobs are launched, set this **Extra Environment Variable** under **Job Settings** (Settings → Jobs). Without it, `first_stdout_timestamp` and `playbook_run` in the CSV will be empty.
+
+```json
+{
+  "ANSIBLE_CALLBACKS_ENABLED": "ansible.posix.profile_tasks,ansible.posix.timer"
+}
+```
 
 ## What it does
 
@@ -10,7 +18,7 @@ For each matching job the script:
 
 1. Detects the Controller API path (`/api/controller/v2/` on AAP 2.5+, or `/api/v2/` on older AWX / Automation Controller).
 2. Lists jobs (all jobs, one job id, or every run of a job template).
-3. Fetches job stdout and takes the first and last non-empty lines (ANSI color codes are stripped).
+3. Fetches job stdout, takes the first and last non-empty lines, the first timestamp, and the `Playbook run took ...` timer line (ANSI color codes are stripped).
 4. Optionally loads the execution environment to include its name and image download/pull policy.
 5. Writes one CSV row per job.
 
@@ -24,7 +32,9 @@ For each matching job the script:
 | `started` | When the job started (UTC) |
 | `execution_image` | Container image used to run the job |
 | `first_stdout_line` | First non-empty line of job stdout |
-| `elapsed_seconds` | Job duration in seconds |
+| `first_stdout_timestamp` | First timestamp found in job stdout (`ansible.posix.profile_tasks` prints this as `Tuesday 01 September 2026  13:36:19 +0000`). Empty if no timestamp is present. |
+| `elapsed_seconds` | Job duration in seconds (from the Controller job record) |
+| `playbook_run` | Timer line from stdout, for example `Playbook run took 0 days, 0 hours, 0 minutes, 4 seconds`. Empty if `ansible.posix.timer` did not run. |
 | `last_stdout_line` | Last non-empty line of job stdout |
 
 With `--show-execution-environment`, two extra columns are added after `execution_image`:
@@ -34,11 +44,11 @@ With `--show-execution-environment`, two extra columns are added after `executio
 | `execution_environment` | Execution environment name |
 | `download_policy` | Image pull policy: `Always pull container before running`, `Only pull the image if not present before running`, or `Never pull container before running`. Empty if the EE has no pull policy set. |
 
-## Recommended Job Settings for better stdout
+## Required Job Settings (Extra Environment Variables)
 
-The script records the first and last non-empty lines of job stdout. Those lines are more useful when Ansible prints task timing and a playbook timer at the end of the run.
+`first_stdout_timestamp` and `playbook_run` are read from job stdout. Ansible only writes those lines if these callbacks are enabled.
 
-On the Controller, set this as an **Extra Environment Variable** under **Job Settings** (Settings → Jobs):
+On the Controller, open **Settings → Jobs** (**Job Settings**) and set **Extra Environment Variables** to:
 
 ```json
 {
@@ -46,16 +56,19 @@ On the Controller, set this as an **Extra Environment Variable** under **Job Set
 }
 ```
 
-- `ansible.posix.profile_tasks` — prints a per-task timing summary
-- `ansible.posix.timer` — prints the total playbook runtime
+| Callback | What it adds to stdout | CSV column |
+| --- | --- | --- |
+| `ansible.posix.profile_tasks` | A timestamp before each task, for example `Tuesday 01 September 2026  13:36:19 +0000` | `first_stdout_timestamp` |
+| `ansible.posix.timer` | `Playbook run took 0 days, 0 hours, 0 minutes, 4 seconds` at the end of the run | `playbook_run` |
 
-Apply this before launching the jobs you want to report on. Existing completed jobs will not pick up the change. The execution environment must include the `ansible.posix` collection (it is present in the supported Red Hat execution environments).
+This setting must be in place **before** the jobs are launched. Jobs that already finished will not pick it up. The execution environment must include the `ansible.posix` collection (it is present in the supported Red Hat execution environments).
 
 ## Requirements
 
 - **Python 3.9 or later**
 - Network access to the Controller API
 - A Controller user token, or a username and password with permission to view jobs
+- **Job Settings → Extra Environment Variables** set to `ANSIBLE_CALLBACKS_ENABLED: ansible.posix.profile_tasks,ansible.posix.timer` (see above). Needed for `first_stdout_timestamp` and `playbook_run`.
 
 **You do not need to install any Python libraries.** The script uses only the Python standard library (`urllib`, `csv`, `argparse`, `json`, and similar). There is no `pip install` step.
 
@@ -86,9 +99,27 @@ export CONTROLLER_PASSWORD=secret
 
 Equivalent flags: `--host`, `--token`, `--username`, `--password`.
 
-If the Controller uses a certificate that is not trusted by this machine, add `--insecure` or set `CONTROLLER_VERIFY_SSL=false`.
+If the Controller uses a certificate that is not trusted by this machine (common with HTTPS to an IP address or a private CA), add `--insecure` or set `CONTROLLER_VERIFY_SSL=false`. Without that, API detection fails with a TLS error before any job data is collected.
 
 Older `TOWER_*` environment variables (`TOWER_HOST`, `TOWER_USERNAME`, `TOWER_PASSWORD`, `TOWER_OAUTH_TOKEN`) are also accepted.
+
+## API version detection (AAP 2.4 vs 2.5+)
+
+The script does not ask you for the AAP version. It probes the Controller and selects the API prefix:
+
+| AAP version | Checking point | API prefix used afterwards |
+| --- | --- | --- |
+| 2.5+ (platform gateway) | `GET /api/` contains `apis.controller`. Fallback: `GET /api/controller/v2/ping/` | `/api/controller/v2` |
+| 2.4 and older AWX | `GET /api/` contains `current_version: /api/v2/`. Fallback: `GET /api/v2/ping/` | `/api/v2` |
+
+Ping itself does not require a token. Job listing and stdout still do.
+
+To skip auto-detection:
+
+```bash
+python3 extract_job_csv.py --api-base /api/controller/v2   # AAP 2.5+
+python3 extract_job_csv.py --api-base /api/v2              # AAP 2.4
+```
 
 ## How to use it
 
@@ -97,6 +128,8 @@ From this directory:
 ```bash
 python3 extract_job_csv.py --help
 ```
+
+While it runs, status and a progress bar go to **stderr** (connecting, API detection, listing jobs, fetching each job's stdout). CSV is written separately to stdout or `-o`, so the bar does not mix into the file.
 
 ### Export every job
 
@@ -130,6 +163,18 @@ Or by template id:
 python3 extract_job_csv.py --job-template-id 6 -o demo-jobs.csv
 ```
 
+### Filter by day
+
+Jobs are matched on **created** time, using the calendar day on the machine that runs the script.
+
+```bash
+python3 extract_job_csv.py --day today -o today.csv
+python3 extract_job_csv.py --day yesterday -o yesterday.csv
+python3 extract_job_csv.py --day 09012026 -o jobs-2026-09-01.csv
+```
+
+`--day` can be combined with `--job-template-name` or `--job-template-id`. A specific `--job-id` is included only if that job was created on the given day.
+
 ### Include execution environment name and download policy
 
 ```bash
@@ -157,15 +202,15 @@ python3 extract_job_csv.py \
 Default columns:
 
 ```csv
-job_id,job_template_name,created,started,execution_image,first_stdout_line,elapsed_seconds,last_stdout_line
-1,Demo Job Template,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,"PLAY [Hello World Sample] ******************************************************",10.594,"localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
+job_id,job_template_name,created,started,execution_image,first_stdout_line,first_stdout_timestamp,elapsed_seconds,playbook_run,last_stdout_line
+1,Demo Job Template,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,"PLAY [Hello World Sample] ******************************************************",Tuesday 11 August 2026  21:22:32 +0000,10.594,"Playbook run took 0 days, 0 hours, 0 minutes, 10 seconds","localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
 ```
 
 With `--show-execution-environment`:
 
 ```csv
-job_id,job_template_name,created,started,execution_image,execution_environment,download_policy,first_stdout_line,elapsed_seconds,last_stdout_line
-1,Demo Job Template,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,Default execution environment,,"PLAY [Hello World Sample] ******************************************************",10.594,"localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
+job_id,job_template_name,created,started,execution_image,execution_environment,download_policy,first_stdout_line,first_stdout_timestamp,elapsed_seconds,playbook_run,last_stdout_line
+1,Demo Job Template,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,Default execution environment,,"PLAY [Hello World Sample] ******************************************************",Tuesday 11 August 2026  21:22:32 +0000,10.594,"Playbook run took 0 days, 0 hours, 0 minutes, 10 seconds","localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
 ```
 
 Stdout fields are quoted when they contain commas or spaces.
@@ -176,9 +221,11 @@ The script only performs GET requests:
 
 | Call | Purpose |
 | --- | --- |
-| `GET /api/controller/v2/ping/` | Detect the API base path |
+| `GET /api/` | Detect AAP 2.5+ gateway vs AAP 2.4 |
+| `GET /api/controller/v2/ping/` | Confirm AAP 2.5+ Controller API |
+| `GET /api/v2/ping/` | Confirm AAP 2.4 / older AWX API |
 | `GET /api/controller/v2/job_templates/?name=<name>` | Resolve a job template name to an id |
-| `GET /api/controller/v2/jobs/` | List jobs |
+| `GET /api/controller/v2/jobs/` | List jobs (`created__gte` / `created__lt` when `--day` is set) |
 | `GET /api/controller/v2/jobs/{id}/` | Retrieve a single job |
 | `GET /api/controller/v2/jobs/{id}/stdout/?format=json` | Read job stdout |
 | `GET /api/controller/v2/execution_environments/{id}/` | EE name and pull policy (only with `--show-execution-environment`) |
