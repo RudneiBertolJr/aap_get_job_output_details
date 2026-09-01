@@ -3,8 +3,7 @@
 
 Writes one CSV row per job with:
   job_id, job_template_name, created, started, execution_image,
-  first_stdout_line, first_stdout_timestamp, elapsed_seconds,
-  playbook_run, last_stdout_line
+  first_stdout_timestamp, elapsed_seconds, playbook_run, last_stdout_line
 
 With --show-execution-environment, also includes:
   execution_environment, download_policy
@@ -48,12 +47,20 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
-ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+ANSI_ESCAPE_RE = re.compile(r"(?:\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r)")
 
-# ansible.posix.profile_tasks: "Tuesday 01 September 2026  13:36:19 +0000 (0:00:00.123) ..."
+# ansible.posix.profile_tasks, e.g.
+# "Tuesday 01 September 2026 17:01:32 +0000 (0:00:00.038) 0:00:00.038 *****"
 PROFILE_TASKS_TS_RE = re.compile(
-    r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+"
-    r"\d{1,2}\s+\w+\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+-]\d{4}"
+    r"(?P<timestamp>"
+    r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+    r"\s+\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+"
+    r"\d{2}:\d{2}:\d{2}\s+"
+    r"[+-]\d{2}:?\d{2}"
+    r")"
+    r"(?:\s+\(\d+:\d{2}:\d{2}(?:\.\d+)?\))?"
+    r"(?:\s+\d+:\d{2}:\d{2}(?:\.\d+)?)?"
+    r"(?:\s+\*+)?"
 )
 ISO_TS_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
@@ -67,7 +74,6 @@ CSV_FIELDS = [
     "created",
     "started",
     "execution_image",
-    "first_stdout_line",
     "first_stdout_timestamp",
     "elapsed_seconds",
     "playbook_run",
@@ -80,11 +86,14 @@ EE_CSV_FIELDS = [
 ]
 
 # Controller stores this as ExecutionEnvironment.pull (always / missing / never).
+# An empty value means the EE has no pull policy set; ansible-runner then omits
+# --pull, which matches the "missing" (only pull if not present) default.
 DOWNLOAD_POLICY_LABELS = {
     "always": "Always pull container before running",
     "missing": "Only pull the image if not present before running",
     "never": "Never pull container before running",
 }
+DEFAULT_DOWNLOAD_POLICY = "missing"
 
 
 class ControllerAPIError(RuntimeError):
@@ -382,29 +391,32 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
-def first_and_last_stdout_lines(stdout: str) -> tuple[str, str]:
+def last_stdout_line(stdout: str) -> str:
     lines = [line.strip() for line in strip_ansi(stdout).splitlines() if line.strip()]
-    if not lines:
-        return "", ""
-    return lines[0], lines[-1]
+    return lines[-1] if lines else ""
 
 
 def stdout_timestamps(stdout: str) -> tuple[str, str]:
-    """Return (first timestamp, Playbook run line) parsed from job stdout."""
+    """Return (first profile_tasks timestamp, Playbook run line) from job stdout."""
     first_ts = ""
     playbook_run = ""
+    iso_fallback = ""
     for raw in strip_ansi(stdout).splitlines():
-        line = raw.strip()
+        line = " ".join(raw.split())
         if not line:
             continue
         if not first_ts:
-            match = PROFILE_TASKS_TS_RE.search(line) or ISO_TS_RE.search(line)
+            match = PROFILE_TASKS_TS_RE.search(line)
             if match:
-                first_ts = match.group(0)
+                first_ts = match.group("timestamp")
+            elif not iso_fallback:
+                iso_match = ISO_TS_RE.search(line)
+                if iso_match:
+                    iso_fallback = iso_match.group(0)
         match = PLAYBOOK_RUN_RE.search(line)
         if match:
             playbook_run = match.group(0).rstrip("*").strip()
-    return first_ts, playbook_run
+    return first_ts or iso_fallback, playbook_run
 
 
 def execution_image(job: dict[str, Any]) -> str:
@@ -418,9 +430,10 @@ def job_template_name(job: dict[str, Any]) -> str:
 
 
 def download_policy_label(pull: str | None) -> str:
-    if not pull:
-        return ""
-    return DOWNLOAD_POLICY_LABELS.get(pull, pull)
+    key = (pull or "").strip().lower()
+    if not key:
+        key = DEFAULT_DOWNLOAD_POLICY
+    return DOWNLOAD_POLICY_LABELS.get(key, pull or "")
 
 
 def execution_environment_fields(client: ControllerClient, job: dict[str, Any]) -> dict[str, str]:
@@ -447,7 +460,6 @@ def job_to_row(
 ) -> dict[str, Any]:
     job_id = job["id"]
     stdout = client.get_stdout_text(job_id)
-    first_line, last_line = first_and_last_stdout_lines(stdout)
     first_ts, playbook_run = stdout_timestamps(stdout)
     elapsed = job.get("elapsed")
     row = {
@@ -456,11 +468,10 @@ def job_to_row(
         "created": job.get("created") or "",
         "started": job.get("started") or "",
         "execution_image": execution_image(job),
-        "first_stdout_line": first_line,
         "first_stdout_timestamp": first_ts,
         "elapsed_seconds": elapsed if elapsed is not None else "",
         "playbook_run": playbook_run,
-        "last_stdout_line": last_line,
+        "last_stdout_line": last_stdout_line(stdout),
     }
     if include_ee:
         row.update(execution_environment_fields(client, job))
