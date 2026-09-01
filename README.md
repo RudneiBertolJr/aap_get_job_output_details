@@ -2,7 +2,7 @@
 
 `extract_job_csv.py` collects execution details from the Ansible Automation Platform (AAP) Controller or AWX REST API and writes them as CSV.
 
-Use it when you need a simple report of job runs: identifiers, timestamps, the container image that executed the job, elapsed time, the first timestamp from job stdout, the `Playbook run` timer line, and the last line of job stdout.
+Use it when you need a simple report of job runs: identifiers, status, timestamps, the container image that executed the job, elapsed time, the first timestamp from job stdout, the `Playbook run` timer line, and the last line of job stdout.
 
 **Required Controller setting:** before jobs are launched, set this **Extra Environment Variable** under **Job Settings** (Settings → Jobs). Without it, `first_stdout_timestamp` and `playbook_run` in the CSV will be empty.
 
@@ -28,6 +28,7 @@ For each matching job the script:
 | --- | --- |
 | `job_id` | Job id |
 | `job_template_name` | Job template name |
+| `status` | Job status from the Controller (`successful`, `failed`, `error`, `canceled`, `pending`, `waiting`, `running`, and similar) |
 | `created` | When the job record was created (UTC) |
 | `started` | When the job started (UTC) |
 | `execution_image` | Container image used to run the job |
@@ -223,15 +224,15 @@ python3 extract_job_csv.py \
 Default columns:
 
 ```csv
-job_id,job_template_name,created,started,execution_image,first_stdout_timestamp,elapsed_seconds,playbook_run,last_stdout_line
-1,Demo Job Template,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,Tuesday 11 August 2026 21:22:32 +0000,10.594,"Playbook run took 0 days, 0 hours, 0 minutes, 10 seconds","localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
+job_id,job_template_name,status,created,started,execution_image,first_stdout_timestamp,elapsed_seconds,playbook_run,last_stdout_line
+1,Demo Job Template,successful,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,Tuesday 11 August 2026 21:22:32 +0000,10.594,"Playbook run took 0 days, 0 hours, 0 minutes, 10 seconds","localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
 ```
 
 With `--show-execution-environment`:
 
 ```csv
-job_id,job_template_name,created,started,execution_image,execution_environment,download_policy,first_stdout_timestamp,elapsed_seconds,playbook_run,last_stdout_line
-1,Demo Job Template,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,Default execution environment,Only pull the image if not present before running,Tuesday 11 August 2026 21:22:32 +0000,10.594,"Playbook run took 0 days, 0 hours, 0 minutes, 10 seconds","localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
+job_id,job_template_name,status,created,started,execution_image,execution_environment,download_policy,first_stdout_timestamp,elapsed_seconds,playbook_run,last_stdout_line
+1,Demo Job Template,successful,2026-08-11T21:22:31.598097Z,2026-08-11T21:22:32.524598Z,registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest,Default execution environment,Only pull the image if not present before running,Tuesday 11 August 2026 21:22:32 +0000,10.594,"Playbook run took 0 days, 0 hours, 0 minutes, 10 seconds","localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0"
 ```
 
 Stdout fields are quoted when they contain commas or spaces.

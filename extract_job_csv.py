@@ -2,7 +2,7 @@
 """Extract job execution details from the Ansible Automation Platform / AWX REST API.
 
 Writes one CSV row per job with:
-  job_id, job_template_name, created, started, execution_image,
+  job_id, job_template_name, status, created, started, execution_image,
   first_stdout_timestamp, elapsed_seconds, playbook_run, last_stdout_line
 
 With --show-execution-environment, also includes:
@@ -71,6 +71,7 @@ PLAYBOOK_RUN_RE = re.compile(r"Playbook run took\s+.+", re.IGNORECASE)
 CSV_FIELDS = [
     "job_id",
     "job_template_name",
+    "status",
     "created",
     "started",
     "execution_image",
@@ -465,6 +466,7 @@ def job_to_row(
     row = {
         "job_id": job_id,
         "job_template_name": job_template_name(job),
+        "status": job.get("status") or "",
         "created": job.get("created") or "",
         "started": job.get("started") or "",
         "execution_image": execution_image(job),
