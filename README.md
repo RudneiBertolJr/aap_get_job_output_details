@@ -157,7 +157,17 @@ python3 extract_job_csv.py --job-id 1 -o job-1.csv
 python3 extract_job_csv.py --job-template-name "Demo Job Template" -o demo-jobs.csv
 ```
 
-Or by template id:
+More than one template (repeat the flag):
+
+```bash
+python3 extract_job_csv.py \
+  --job-template-name "Demo Job Template" \
+  --job-template-name "rbertol - repro" \
+  --day today \
+  -o today.csv
+```
+
+Or by template id (also repeatable):
 
 ```bash
 python3 extract_job_csv.py --job-template-id 6 -o demo-jobs.csv
@@ -166,6 +176,18 @@ python3 extract_job_csv.py --job-template-id 6 -o demo-jobs.csv
 ### Filter by day
 
 Jobs are matched on **created** time, using the calendar day on the machine that runs the script.
+
+Today's runs of one or more job templates:
+
+```bash
+python3 extract_job_csv.py \
+  --job-template-name "Demo Job Template" \
+  --job-template-name "rbertol - repro" \
+  --day today \
+  -o today.csv
+```
+
+All jobs for a day (any template):
 
 ```bash
 python3 extract_job_csv.py --day today -o today.csv

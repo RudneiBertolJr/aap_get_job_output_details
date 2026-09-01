@@ -26,7 +26,7 @@ Examples:
   export CONTROLLER_HOST=https://controller.example.com
   export CONTROLLER_TOKEN=xxxx
   python3 extract_job_csv.py --job-template-name "Demo Job Template" \\
-      --show-execution-environment --day today
+      --job-template-name "rbertol - repro" --day today
 
   python3 extract_job_csv.py --host https://controller.example.com \\
       --username admin --password secret --day 09012026 -o jobs.csv
@@ -296,7 +296,7 @@ class ControllerClient:
     def list_jobs(
         self,
         job_id: int | None = None,
-        job_template_id: int | None = None,
+        job_template_ids: list[int] | None = None,
         created_gte: str | None = None,
         created_lt: str | None = None,
         on_page: Any = None,
@@ -304,14 +304,25 @@ class ControllerClient:
         if job_id is not None:
             return [self.request(f"{self.api_base}/jobs/{job_id}/")]
 
-        params: dict[str, Any] = {"order_by": "-id", "type": "job"}
-        if job_template_id is not None:
-            params["job_template"] = job_template_id
-        if created_gte:
-            params["created__gte"] = created_gte
-        if created_lt:
-            params["created__lt"] = created_lt
-        return list(self.paginate(f"{self.api_base}/jobs/", params, on_page=on_page))
+        template_ids = list(job_template_ids or [])
+        if not template_ids:
+            params: dict[str, Any] = {"order_by": "-id", "type": "job"}
+            if created_gte:
+                params["created__gte"] = created_gte
+            if created_lt:
+                params["created__lt"] = created_lt
+            return list(self.paginate(f"{self.api_base}/jobs/", params, on_page=on_page))
+
+        jobs_by_id: dict[int, dict[str, Any]] = {}
+        for template_id in template_ids:
+            params = {"order_by": "-id", "type": "job", "job_template": template_id}
+            if created_gte:
+                params["created__gte"] = created_gte
+            if created_lt:
+                params["created__lt"] = created_lt
+            for job in self.paginate(f"{self.api_base}/jobs/", params, on_page=on_page):
+                jobs_by_id[int(job["id"])] = job
+        return sorted(jobs_by_id.values(), key=lambda job: int(job["id"]), reverse=True)
 
     def get_stdout_text(self, job_id: int) -> str:
         payload = self.request(f"{self.api_base}/jobs/{job_id}/stdout/", {"format": "json"})
@@ -494,8 +505,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "Use /api/controller/v2 for AAP 2.5+ or /api/v2 for AAP 2.4.",
     )
     parser.add_argument("--job-id", type=int, help="Export a single job by id")
-    parser.add_argument("--job-template-id", type=int, help="Export all jobs for this job template id")
-    parser.add_argument("--job-template-name", help="Export all jobs for this job template name")
+    parser.add_argument(
+        "--job-template-id",
+        type=int,
+        action="append",
+        dest="job_template_ids",
+        help="Export jobs for this job template id. Repeat the flag to include more than one.",
+    )
+    parser.add_argument(
+        "--job-template-name",
+        action="append",
+        dest="job_template_names",
+        help="Export jobs for this job template name. Repeat the flag to include more than one.",
+    )
     parser.add_argument(
         "--day",
         type=parse_day_arg,
@@ -557,14 +579,24 @@ def _run(args: argparse.Namespace) -> int:
     version_label = "AAP 2.5+" if client.api_base == "/api/controller/v2" else "AAP 2.4 / AWX"
     status.info(f"Detected {version_label} at {client.api_base}")
 
-    job_template_id = args.job_template_id
-    if args.job_template_name:
-        status.info(f'Looking up job template "{args.job_template_name}" ...')
-        job_template_id = client.find_job_template_id(args.job_template_name)
-        status.info(f"Found job template id {job_template_id}")
+    template_ids: list[int] = list(args.job_template_ids or [])
+    for name in args.job_template_names or []:
+        status.info(f'Looking up job template "{name}" ...')
+        template_id = client.find_job_template_id(name)
+        status.info(f'Found "{name}" as job template id {template_id}')
+        template_ids.append(template_id)
+
+    unique_template_ids: list[int] = []
+    seen_template_ids: set[int] = set()
+    for template_id in template_ids:
+        if template_id not in seen_template_ids:
+            seen_template_ids.add(template_id)
+            unique_template_ids.append(template_id)
 
     if args.job_id is not None:
         status.info(f"Fetching job {args.job_id} ...")
+    elif unique_template_ids:
+        status.info(f"Listing jobs for {len(unique_template_ids)} job template(s) ...")
     else:
         status.info("Listing jobs ...")
 
@@ -584,7 +616,7 @@ def _run(args: argparse.Namespace) -> int:
 
     jobs = client.list_jobs(
         job_id=args.job_id,
-        job_template_id=job_template_id,
+        job_template_ids=unique_template_ids or None,
         created_gte=created_gte,
         created_lt=created_lt,
         on_page=on_list_page,
